@@ -243,6 +243,13 @@ curl --location 'https://starbasedb.YOUR-ID-HERE.workers.dev/export/dump' \
 </code>
 </pre>
 
+<p>
+  <strong>Note:</strong><br>
+  Database exports stream table data in chunks instead of loading the entire
+  database into memory. This allows exporting very large databases without
+  hitting Cloudflare Worker memory or execution limits.
+</p>
+
 <h3>JSON Data Export</h3>
 <pre>
 <code>

@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers'
+import { AsyncDumpManager, DumpFormat } from './export/dump'
 
 export class StarbaseDBDurableObject extends DurableObject {
     // Durable storage for the SQL database
@@ -105,6 +106,17 @@ export class StarbaseDBDurableObject extends DurableObject {
     }
 
     async alarm() {
+        // Resume any in-progress async database export first.
+        const activeExportJob = await this.storage.get<string>('async_dump_active_job')
+        if (activeExportJob) {
+            try {
+                await this._makeDumpManager().resumeFromAlarm()
+            } catch (e) {
+                console.error('Error resuming async dump:', e)
+            }
+            return
+        }
+
         try {
             // Fetch all the tasks that are marked to emit an event for this cycle.
             const task = (await this.executeQuery({
@@ -146,6 +158,18 @@ export class StarbaseDBDurableObject extends DurableObject {
                 console.error('Failed to set recovery alarm:', retryError)
             }
         }
+    }
+
+    /** Creates an AsyncDumpManager wired to this DO instance. */
+    private _makeDumpManager(): AsyncDumpManager {
+        const env = (this as any).env as Env
+        return new AsyncDumpManager(
+            this.storage,
+            (env as any).DATABASE_DUMPS,
+            this.executeQuery.bind(this),
+            (delayMs: number) => this.setAlarm(Date.now() + delayMs),
+            this.ctx
+        )
     }
 
     public async getStatistics(): Promise<{
@@ -204,6 +228,22 @@ export class StarbaseDBDurableObject extends DurableObject {
             }
 
             return new Response('Broadcast sent', { status: 200 })
+        }
+
+        // ----- Async export endpoints -----
+        if (url.pathname === '/export/dump' && request.method === 'POST') {
+            const body = await request.json().catch(() => ({})) as { format?: DumpFormat; callbackUrl?: string; chunkSize?: number }
+            return this._makeDumpManager().startDump(body)
+        }
+
+        if (url.pathname.startsWith('/export/dump/status/')) {
+            const jobId = url.pathname.split('/').pop()!
+            return this._makeDumpManager().getStatus(jobId)
+        }
+
+        if (url.pathname.startsWith('/export/dump/download/')) {
+            const jobId = url.pathname.split('/').pop()!
+            return this._makeDumpManager().download(jobId)
         }
 
         return new Response('Unknown operation', { status: 400 })
